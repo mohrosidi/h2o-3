@@ -8,6 +8,7 @@ import water.exceptions.H2OIllegalArgumentException;
 import water.util.PojoUtils;
 
 import java.util.*;
+import java.util.function.Consumer;
 
 import static java.lang.StrictMath.min;
 
@@ -40,37 +41,14 @@ public interface HyperSpaceWalker<MP extends Model.Parameters, C extends HyperSp
      */
     boolean hasNext(Model previousModel);
 
-    void reset();
-
-    /**
-     * @return the total time allowed for building this grid, in seconds.
-     */
-    double max_runtime_secs();
-
-    /**
-     * @return the maximum number of models to build
-     */
-    int max_models();
-
-    /**
-     * @return the time remaining for building this grid, in seconds.
-     */
-    double time_remaining_secs();
-
     /**
      * Inform the Iterator that a model build failed in case it needs to adjust its internal state.
-     * @param failedModel
+     * Implementations are expected to consume the {@code withFailedModelHyperParams} callback with the hyperParams used to create the failed model.
+     * @param failedModel: the model whose training failed.
+     * @param withFailedModelHyperParams: consumes the "raw" hyperparameters values used for the failed model.
      */
-    void modelFailed(Model failedModel);
+    void onModelFailure(Model failedModel, Consumer<Object[]> withFailedModelHyperParams);
 
-    /**
-     * Returns current "raw" state of iterator.
-     *
-     * The state is represented by a permutation of values of grid parameters.
-     *
-     * @return  array of "untyped" values representing configuration of grid parameters
-     */
-    Object[] getCurrentRawParameters();
   } // interface HyperSpaceIterator
 
   /**
@@ -320,7 +298,8 @@ public interface HyperSpaceWalker<MP extends Model.Parameters, C extends HyperSp
     }
 
     /** Given a list of indices for the hyperparameter values return an Object[] of the actual values. */
-    protected Object[] hypers(int[] hidx, Object[] hypers) {
+    protected Object[] hypers(int[] hidx) {
+      Object[] hypers = new Object[_hyperParamNames.length];
       for (int i = 0; i < hidx.length; i++) {
         hypers[i] = _hyperParams.get(_hyperParamNames[i])[hidx[i]];
       }
@@ -361,7 +340,7 @@ public interface HyperSpaceWalker<MP extends Model.Parameters, C extends HyperSp
           _currentHyperparamIndices = _currentHyperparamIndices != null ? nextModelIndices(_currentHyperparamIndices) : new int[_hyperParamNames.length];
           if (_currentHyperparamIndices != null) {
             // Fill array of hyper-values
-            Object[] hypers = hypers(_currentHyperparamIndices, new Object[_hyperParamNames.length]);
+            Object[] hypers = hypers(_currentHyperparamIndices);
             // Get clone of parameters
             MP commonModelParams = (MP) _params.clone();
             // Fill model parameters
@@ -387,54 +366,38 @@ public interface HyperSpaceWalker<MP extends Model.Parameters, C extends HyperSp
           return false;
         }
 
-        @Override public void reset() {
-          _currentHyperparamIndices = null;
+        @Override
+        public void onModelFailure(Model failedModel, Consumer<Object[]> withFailedModelHyperParams) {
+          // FIXME: when using parallel grid search, there's no good reason to think that the current hyperparam indices where the ones used for the failed model
+          withFailedModelHyperParams.accept(hypers(_currentHyperparamIndices));
         }
 
-        @Override
-        public double time_remaining_secs() { return Double.MAX_VALUE; }
-
-        @Override
-        public double max_runtime_secs() { return Double.MAX_VALUE; }
-
-        public int max_models() { return _maxHyperSpaceSize > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int)_maxHyperSpaceSize; }
-
-        @Override
-        public void modelFailed(Model failedModel) {
-          // nada
-        }
-
-        @Override
-        public Object[] getCurrentRawParameters() {
-          Object[] hyperValues = new Object[_hyperParamNames.length];
-          return hypers(_currentHyperparamIndices, hyperValues);
+        /**
+         * Cartesian iteration over the hyper-parameter space, varying one hyperparameter at a
+         * time. Mutates the indices that are passed in and returns them.  Returns NULL when
+         * the entire space has been traversed.
+         */
+        private int[] nextModelIndices(int[] hyperparamIndices) {
+          // Find the next parm to flip
+          int i;
+          for (i = 0; i < hyperparamIndices.length; i++) {
+            if (hyperparamIndices[i] + 1 < _hyperParams.get(_hyperParamNames[i]).length) {
+              break;
+            }
+          }
+          if (i == hyperparamIndices.length) {
+            return null; // All done, report null
+          }
+          // Flip indices
+          for (int j = 0; j < i; j++) {
+            hyperparamIndices[j] = 0;
+          }
+          hyperparamIndices[i]++;
+          return hyperparamIndices;
         }
       }; // anonymous HyperSpaceIterator class
     } // iterator()
 
-    /**
-     * Cartesian iteration over the hyper-parameter space, varying one hyperparameter at a
-     * time. Mutates the indices that are passed in and returns them.  Returns NULL when
-     * the entire space has been traversed.
-     */
-    private int[] nextModelIndices(int[] hyperparamIndices) {
-      // Find the next parm to flip
-      int i;
-      for (i = 0; i < hyperparamIndices.length; i++) {
-        if (hyperparamIndices[i] + 1 < _hyperParams.get(_hyperParamNames[i]).length) {
-          break;
-        }
-      }
-      if (i == hyperparamIndices.length) {
-        return null; // All done, report null
-      }
-      // Flip indices
-      for (int j = 0; j < i; j++) {
-        hyperparamIndices[j] = 0;
-      }
-      hyperparamIndices[i]++;
-      return hyperparamIndices;
-    }
   } // class CartesianWalker
 
   /**
@@ -444,10 +407,6 @@ public interface HyperSpaceWalker<MP extends Model.Parameters, C extends HyperSp
   public static class RandomDiscreteValueWalker<MP extends Model.Parameters>
           extends BaseWalker<MP, HyperSpaceSearchCriteria.RandomDiscreteValueSearchCriteria> {
     Random random;
-
-    /** All visited hyper params permutations, including the current one. */
-    private List<int[]> _visitedPermutations = new ArrayList<>();
-    private Set<Integer> _visitedPermutationHashes = new LinkedHashSet<>(); // for fast dupe lookup
 
     public RandomDiscreteValueWalker(MP params,
                                      Map<String, Object[]> hyperParams,
@@ -474,14 +433,15 @@ public interface HyperSpaceWalker<MP extends Model.Parameters, C extends HyperSp
     @Override
     public HyperSpaceIterator<MP> iterator() {
       return new HyperSpaceIterator<MP>() {
+        /** All visited hyper params permutations, including the current one. */
+        private final List<int[]> _visitedPermutations = new ArrayList<>();
+        private final Set<Integer> _visitedPermutationHashes = new LinkedHashSet<>(); // for fast dupe lookup
+
         /** Current hyper params permutation. */
         private int[] _currentHyperparamIndices = null;
 
         /** One-based count of the permutations we've visited, primarily used as an index into _visitedHyperparamIndices. */
         private int _currentPermutationNum = 0;
-
-        /** Start time of this grid */
-        private long _start_time = System.currentTimeMillis();
 
         // TODO: override into a common subclass:
         @Override
@@ -497,7 +457,7 @@ public interface HyperSpaceWalker<MP extends Model.Parameters, C extends HyperSp
             _currentPermutationNum++; // NOTE: 1-based counting
 
             // Fill array of hyper-values
-            Object[] hypers = hypers(_currentHyperparamIndices, new Object[_hyperParamNames.length]);
+            Object[] hypers = hypers(_currentHyperparamIndices);
             // Get clone of parameters
             MP commonModelParams = (MP) _params.clone();
             // Fill model parameters
@@ -510,16 +470,6 @@ public interface HyperSpaceWalker<MP extends Model.Parameters, C extends HyperSp
               if (_set_model_seed_from_search_seed) {
                 // set model seed = search_criteria.seed+(0, 1, 2,..., model number)
                 params._seed = _search_criteria.seed() + (model_number++);
-              }
-
-              // set max_runtime_secs
-              double timeleft = this.time_remaining_secs();
-              if (timeleft > 0)  {
-                if (params._max_runtime_secs > 0) {
-                  params._max_runtime_secs = min(params._max_runtime_secs, timeleft);
-                } else {
-                  params._max_runtime_secs = timeleft;
-                }
               }
             }
             return params;
@@ -540,61 +490,33 @@ public interface HyperSpaceWalker<MP extends Model.Parameters, C extends HyperSp
         }
 
         @Override
-        public void reset() {
-          _start_time = System.currentTimeMillis();
-          _currentPermutationNum = 0;
-          _currentHyperparamIndices = null;
-          _visitedPermutations.clear();
-          _visitedPermutationHashes.clear();
-        }
-
-        public double max_runtime_secs() {
-          return search_criteria().max_runtime_secs();
-        }
-
-        public int max_models() {
-          return search_criteria().max_models();
-        }
-
-        @Override
-        public double time_remaining_secs() {
-          return search_criteria().max_runtime_secs() - (System.currentTimeMillis() - _start_time) / 1000.0;
-        }
-
-        @Override
-        public void modelFailed(Model failedModel) {
-          // Leave _visitedPermutations, _visitedPermutationHashes and _currentHyperparamIndices alone
-          // so we don't revisit bad parameters. Note that if a model build fails for other reasons we
-          // won't retry.
+        public void onModelFailure(Model failedModel, Consumer<Object[]> withFailedModelHyperParams) {
+          // FIXME: when using parallel grid search, there's no good reason to think that the current hyperparam indices where the ones used for the failed model
           _currentPermutationNum--;
+          withFailedModelHyperParams.accept(hypers(_currentHyperparamIndices));
         }
 
-        @Override
-        public Object[] getCurrentRawParameters() {
-          Object[] hyperValues = new Object[_hyperParamNames.length];
-          return hypers(_currentHyperparamIndices, hyperValues);
-        }
+        /**
+         * Random iteration over the hyper-parameter space.  Does not repeat
+         * previously-visited combinations.  Returns NULL when we've hit the stopping
+         * criteria.
+         */
+        private int[] nextModelIndices() {
+          int[] hyperparamIndices =  new int[_hyperParamNames.length];
+
+          do {
+            // generate random indices
+            for (int i = 0; i < _hyperParamNames.length; i++) {
+              hyperparamIndices[i] = random.nextInt(_hyperParams.get(_hyperParamNames[i]).length);
+            }
+            // check for aliases and loop if we've visited this combo before
+          } while (_visitedPermutationHashes.contains(integerHash(hyperparamIndices)));
+
+          return hyperparamIndices;
+        } // nextModel
+
       }; // anonymous HyperSpaceIterator class
     } // iterator()
-
-    /**
-     * Random iteration over the hyper-parameter space.  Does not repeat
-     * previously-visited combinations.  Returns NULL when we've hit the stopping
-     * criteria.
-     */
-    private int[] nextModelIndices() {
-      int[] hyperparamIndices =  new int[_hyperParamNames.length];
-
-      do {
-        // generate random indices
-        for (int i = 0; i < _hyperParamNames.length; i++) {
-          hyperparamIndices[i] = random.nextInt(_hyperParams.get(_hyperParamNames[i]).length);
-        }
-        // check for aliases and loop if we've visited this combo before
-      } while (_visitedPermutationHashes.contains(integerHash(hyperparamIndices)));
-
-      return hyperparamIndices;
-    } // nextModel
 
   } // RandomDiscreteValueWalker
 }
