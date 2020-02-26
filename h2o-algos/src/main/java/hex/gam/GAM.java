@@ -20,7 +20,6 @@ import java.util.Arrays;
 import java.util.List;
 
 import static hex.gam.MatrixFrameUtils.GamUtils.*;
-import static hex.gam.MatrixFrameUtils.GamUtils.addFrameKeys2Keep;
 
 
 public class GAM extends ModelBuilder<GAMModel, GAMModel.GAMParameters, GAMModel.GAMModelOutput> {
@@ -92,6 +91,8 @@ public class GAM extends ModelBuilder<GAMModel, GAMModel.GAMParameters, GAMModel
                 " Gam columns in _gamX exceeds 2");
       if ((_parms._lambda_search || !_parms._intercept || _parms._lambda == null || _parms._lambda[0] > 0)) 
         _parms._use_all_factor_levels = true;
+      if (_parms._link.equals(GLMParameters.Link.family_default))
+        _parms._link = _parms._family.defaultLink;
     }
   }
 
@@ -168,16 +169,16 @@ public class GAM extends ModelBuilder<GAMModel, GAMModel.GAMParameters, GAMModel
         int trainCols = _train.numCols();  // number of columns before adding GAM columns
         String[] trainColNames = _train.names(); // column names before adding GAM columns
         Frame newTrain = rebalance(adaptTrain(), false, _result+".temporary.train"); // add and store gam cols without centering
-        dinfo = new DataInfo(newTrain.clone(), _valid, 1, _parms._use_all_factor_levels || _parms._lambda_search, _parms._standardize ? DataInfo.TransformType.STANDARDIZE : DataInfo.TransformType.NONE, DataInfo.TransformType.NONE,
+        dinfo = new DataInfo(newTrain.clone(), _valid, 1, _parms._use_all_factor_levels || _parms._lambda_search, DataInfo.TransformType.NONE, DataInfo.TransformType.NONE,
                 _parms.missingValuesHandling() == GLMParameters.MissingValuesHandling.Skip,
                 _parms.missingValuesHandling() == GLMParameters.MissingValuesHandling.MeanImputation || _parms.missingValuesHandling() == GLMParameters.MissingValuesHandling.PlugValues,
                 _parms.makeImputer(),
                 false, hasWeightCol(), hasOffsetCol(), hasFoldCol(), null);
         DKV.put(dinfo._key, dinfo);
-        model = new GAMModel(dest(), _parms, new GAMModel.GAMModelOutput(GAM.this, dinfo._adaptedFrame));
+        model = new GAMModel(dest(), _parms, new GAMModel.GAMModelOutput(GAM.this, dinfo._adaptedFrame, dinfo));
         model.delete_and_lock(_job);
-        newTFrame = _centerGAM?new Frame(buildGamFrameCenter(_parms._gam_X.length, _gamFrameKeysCenter, newTrain, 
-                _parms._response_column, trainCols, trainColNames)):new Frame(dinfo._adaptedFrame);  // get frames with correct predictors and spline functions
+        newTFrame = _centerGAM?new Frame(buildGamFrameCenter(_parms._gam_X.length, _gamFrameKeysCenter, _parms.train(), 
+                _parms._response_column, _parms.train().numCols(), _parms.train().names())):new Frame(dinfo._adaptedFrame);  // get frames with correct predictors and spline functions
         DKV.put(newTFrame); // This one will cause deleted vectors if add to Scope.track
         if (_parms._saveGamCols) {  // save gam column keys
           gamColsFrame = saveGAMFrames(newTrain);
@@ -232,6 +233,7 @@ public class GAM extends ModelBuilder<GAMModel, GAMModel.GAMParameters, GAMModel
       model._output._zTranspose = _zTranspose;
       model._gamFrameKeys = _gamFrameKeys;
       model._gamFrameKeysCenter = _gamFrameKeysCenter;
+      model._nclass = _nclass;
       if (_parms._savePenaltyMat)
         model._output._penaltyMatrices = _penalty_mat;
       copyGLMCoeffs(glm, model, dinfo);  // copy over coefficient names and generate coefficients as beta = z*GLM_beta

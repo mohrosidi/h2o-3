@@ -3,9 +3,13 @@ package hex.gam;
 import hex.*;
 import hex.deeplearning.DeepLearningModel;
 import hex.glm.GLM;
+import hex.glm.GLMModel;
 import hex.glm.GLMModel.GLMParameters.*;
 import water.*;
+import water.fvec.Chunk;
 import water.fvec.Frame;
+import water.fvec.NewChunk;
+import water.fvec.Vec;
 import water.udf.CFuncRef;
 import water.util.ArrayUtils;
 import water.util.Log;
@@ -15,6 +19,7 @@ import java.util.Arrays;
 
 import static hex.gam.MatrixFrameUtils.GamUtils.addGAM2Train;
 import static hex.gam.MatrixFrameUtils.GamUtils.equalColNames;
+import static hex.glm.GLMModel.GLMParameters.MissingValuesHandling;
 
 public class GAMModel extends Model<GAMModel, GAMModel.GAMParameters, GAMModel.GAMModelOutput> {
   public boolean _centerGAM = false;  // true if centering is needed for training dataset
@@ -22,6 +27,7 @@ public class GAMModel extends Model<GAMModel, GAMModel.GAMParameters, GAMModel.G
   public String[][] _gamColNamesCenter; // store column names only for GAM columns after decentering
   public Key<Frame>[] _gamFrameKeys;
   public Key<Frame>[] _gamFrameKeysCenter;
+  public int _nclass; // 2 for binomial, > 2 for multinomial and ordinal
   
   @Override public ModelMetrics.MetricBuilder makeMetricBuilder(String[] domain) {
     return null;
@@ -128,6 +134,30 @@ public class GAMModel extends Model<GAMModel, GAMModel.GAMParameters, GAMModel.G
         return new DataInfo.MeanImputer();
       }
     }
+    
+    public final static double linkInv(double x, Link link, double tweedie_link_power) {
+      switch(link) {
+//        case multinomial: // should not be used
+        case identity:
+          return x;
+        case ologlog:
+          return 1.0-Math.exp(-1.0*Math.exp(x));
+        case ologit:
+        case logit:
+          return 1.0 / (Math.exp(-x) + 1.0);
+        case log:
+          return Math.exp(x);
+        case inverse:
+          double xx = (x < 0) ? Math.min(-1e-5, x) : Math.max(1e-5, x);
+          return 1.0 / xx;
+        case tweedie:
+          return tweedie_link_power == 0
+                  ?Math.max(2e-16,Math.exp(x))
+                  :Math.pow(x, 1/ tweedie_link_power);
+        default:
+          throw new RuntimeException("unexpected link function  " + link.toString());
+      }
+    }
   }
   
   public static class GAMModelOutput extends Model.Output {
@@ -148,10 +178,17 @@ public class GAMModel extends Model<GAMModel, GAMModel.GAMParameters, GAMModel.G
     public Key<Frame> _gamTransformedTrain;  // contain key of predictors, all gam columns
     public Key<Frame> _gamTransformedTrainCenter;  // contain key of predictors, all gam columns centered
     public Key<Frame> _gamGamXCenter; // store key for centered GAM columns if needed
+    public DataInfo _dinfo;
+    public String[] _responseDomains;
 
     public double dispersion(){ return _dispersion;}
     
-    public GAMModelOutput(GAM b, Frame adaptr) { super(b, adaptr); }
+    public GAMModelOutput(GAM b, Frame adaptr, DataInfo dinfo) { 
+      super(b, adaptr); 
+      _dinfo = dinfo;
+      _domains = dinfo._adaptedFrame.domains(); // get domain of dataset predictors
+      _responseDomains = dinfo._adaptedFrame.lastVec().domain();
+    }
 
     @Override public ModelCategory getModelCategory() {
       return ModelCategory.Regression;
@@ -196,7 +233,142 @@ public class GAMModel extends Model<GAMModel, GAMModel.GAMParameters, GAMModel.G
   @Override
   protected Frame predictScoreImpl(Frame fr, Frame adaptFrm, String destination_key, Job j, boolean computeMetrics, 
                                    CFuncRef customMetricFunc) {
-    return adaptFrm;  // place holder
+    int nReponse = ArrayUtils.contains(adaptFrm.names(), _parms._response_column)?1:0;
+    String[] predictNames = super.makeScoringNames();
+    String[][] domains = new String[predictNames.length][];
+    DataInfo datainfo = new DataInfo(adaptFrm.clone(), null, nReponse,
+            _parms._use_all_factor_levels || _parms._lambda_search, DataInfo.TransformType.NONE, 
+            DataInfo.TransformType.NONE, _parms.missingValuesHandling() == MissingValuesHandling.Skip, 
+            _parms.missingValuesHandling() == MissingValuesHandling.MeanImputation || 
+                    _parms.missingValuesHandling() == MissingValuesHandling.PlugValues, _parms.makeImputer(), 
+            false, _parms._weights_column!=null, _parms._offset_column==null, 
+            _parms._fold_column!=null, null);
+    GAMScore gs = new GAMScore(_output._dinfo, _output._model_beta, _output._model_beta_multinomial, _nclass, j, 
+            _parms._family, _output._responseDomains, this);
+    gs.doAll(predictNames.length, Vec.T_NUM, datainfo._adaptedFrame);
+    domains[0] = gs._predDomains;
+    return gs.outputFrame(Key.make(), predictNames, domains);  // place holder
+  }
+  
+  private static class GAMScore extends MRTask<GAMScore> {
+    private DataInfo _dinfo;
+    private double[] _coeffs;
+    private double[][] _coeffs_multinomial;
+    private int _nclass;
+    private boolean _computeMetrics;
+    final Job _j;
+    Family _family;
+    private transient double[] _eta;  // store eta calculation
+    private String[] _predDomains;
+    final GAMModel _m;
+    private final double _defaultThreshold;
+    private int _lastClass;
+    
+    private GAMScore(DataInfo dinfo, double[] coeffs, double[][] coeffs_multinomial, int nclass, Job job, Family family,
+                     String[] domains, GAMModel m) {
+      _dinfo = dinfo;
+      _coeffs = coeffs;
+      _coeffs_multinomial = coeffs_multinomial;
+      _nclass = nclass;
+      _computeMetrics = dinfo._responses > 0; // can only compute metrics if response column exists
+      _j = job;
+      _family = family;
+      _predDomains = domains; // prediction/response domains
+      _m = m;
+      _defaultThreshold = m.defaultThreshold();
+      _lastClass = _nclass-1;
+    }
+    
+    @Override
+    public void map(Chunk[]chks, NewChunk[] nc) {
+      if (isCancelled() || _j != null && _j.stop_requested()) return;
+      if (_family.equals(Family.ordinal)||_family.equals(Family.multinomial))
+        _eta = MemoryManager.malloc8d(_nclass);
+      int numPredVals = _nclass<=1?1:_nclass+1; // number of predictor values expected.
+      double[] predictVals = MemoryManager.malloc8d(numPredVals);
+      DataInfo.Row r = _dinfo.newDenseRow();
+      int chkLen = chks[0]._len;
+      for (int rid=0; rid<chkLen; rid++) {
+        _dinfo.extractDenseRow(chks, rid, r);
+        boolean computeMetrics = r.response_bad;  // skip over row if predictor is bad and don't calculate metrics
+        processRow(r, predictVals, nc, numPredVals, computeMetrics);
+      }
+      if (_j != null) _j.update(1);
+    }
+    
+    private void processRow(DataInfo.Row r, double[] ps, NewChunk[] preds, int ncols, boolean computeMetrics) {
+      if (r.predictors_bad) 
+        Arrays.fill(ps, Double.NaN);  // output NaN with bad predictor entries
+      else if (r.weight == 0) 
+        Arrays.fill(ps, 0.0); // zero weight entries got 0 too
+      switch (_family) {
+        case multinomial: ps = scoreMultinomialRow(r, r.offset, ps); break;
+        case ordinal: ps = scoreOrdinalRow(r, r.offset, ps); break;
+        default: ps = scoreRow(r, r.offset, ps); break;
+      }
+      for (int predCol=0; predCol < ncols; predCol++) { // write prediction to NewChunk
+        preds[predCol].addNum(ps[predCol]);
+      }
+    }
+    
+    public double[] scoreRow(DataInfo.Row r, double offset, double[] preds) {
+      double mu = _m._parms.linkInv(r.innerProduct(_coeffs) + offset, _m._parms._link, 
+              _m._parms._tweedie_link_power);
+      if (_m._parms._family == GLMModel.GLMParameters.Family.binomial || 
+              _m._parms._family == GLMModel.GLMParameters.Family.quasibinomial) { // threshold for prediction
+        preds[0] = mu >= _defaultThreshold?1:0;
+        preds[1] = 1.0 - mu; // class 0
+        preds[2] = mu; // class 1
+      } else
+        preds[0] = mu;
+
+      return preds;
+    }
+    
+    public double[] scoreOrdinalRow(DataInfo.Row r, double offset, double[] preds) {
+      final double[][] bm = _coeffs_multinomial;
+      Arrays.fill(preds,0); // initialize to small number
+      preds[0] = _lastClass;  // initialize to last class by default here
+      double previousCDF = 0.0;
+      for (int cInd = 0; cInd < _lastClass; cInd++) { // classify row and calculate PDF of each class
+        double eta = r.innerProduct(bm[cInd]) + offset;
+        double currCDF = 1.0 / (1 + Math.exp(-eta));
+        preds[cInd + 1] = currCDF - previousCDF;
+        previousCDF = currCDF;
+
+        if (eta > 0) { // found the correct class
+          preds[0] = cInd;
+          break;
+        }
+      }
+      for (int cInd = (int) preds[0] + 1; cInd < _lastClass; cInd++) {  // continue PDF calculation
+        double currCDF = 1.0 / (1 + Math.exp(-r.innerProduct(bm[cInd]) + offset));
+        preds[cInd + 1] = currCDF - previousCDF;
+        previousCDF = currCDF;
+
+      }
+      preds[_nclass] = 1-previousCDF;
+      return preds;
+    }
+    
+    public double[] scoreMultinomialRow(DataInfo.Row r, double offset, double[] preds) {
+      double[] eta = _eta;
+      final double[][] bm = _coeffs_multinomial;
+      double sumExp = 0;
+      double maxRow = Double.NEGATIVE_INFINITY;
+      for (int c = 0; c < bm.length; ++c) {
+        eta[c] = r.innerProduct(bm[c]) + offset;
+        if(eta[c] > maxRow)
+          maxRow = eta[c];
+      }
+      for (int c = 0; c < bm.length; ++c)
+        sumExp += eta[c] = Math.exp(eta[c]-maxRow); // intercept
+      sumExp = 1.0 / sumExp;
+      for (int c = 0; c < bm.length; ++c)
+        preds[c + 1] = eta[c] * sumExp;
+      preds[0] = ArrayUtils.maxIndex(eta);   
+      return preds;
+    }
   }
 
   @Override 

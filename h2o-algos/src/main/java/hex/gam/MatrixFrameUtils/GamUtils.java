@@ -92,10 +92,8 @@ public class GamUtils {
   public static void setParamField(GAMParameters parms, GLMParameters glmParam, boolean superClassParams, Field[] gamFields) {
     // assign relevant GAMParameter fields to GLMParameter fields
     List<String> gamOnlyList = Arrays.asList(new String[]{"_k", "_gam_X", "_bs", "_scale", "_train", "_saveZMatrix", 
-            "_saveGamCols", "_savePenaltyMat", "_ignored_columns"});
+            "_saveGamCols", "_savePenaltyMat"});
     for (Field oneField : gamFields) {
-      if (oneField.getName().equals("_repsonse_column"))
-        System.out.println("whoe");
       try {
         if (!gamOnlyList.contains(oneField.getName())) {
           Field glmField = superClassParams?glmParam.getClass().getSuperclass().getDeclaredField(oneField.getName())

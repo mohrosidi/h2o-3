@@ -144,22 +144,21 @@ public class GamTestPiping extends TestUtil {
 
   @Test
   public void testStandardizedCoeff() {
-    // test for multinomial
-    String[] ignoredCols = new String[]{"C3", "C4", "C5", "C6", "C7", "C8", "C9", "C10"};
-    String[] gamCols = new String[]{"C6", "C7"};
-    testCoeffs(GLMModel.GLMParameters.Family.multinomial, 
-            "smalldata/glm_test/multinomial_10_classes_10_cols_10000_Rows_train.csv", "C11", 
-            gamCols, ignoredCols);
-
-    // test for binomial
-    ignoredCols = new String[]{"C3", "C4", "C5", "C6", "C7", "C8", "C9", "C10", "C11", "C12", "C13", "C14", "C15", 
+    String[] ignoredCols = new String[]{"C3", "C4", "C5", "C6", "C7", "C8", "C9", "C10", "C11", "C12", "C13", "C14", "C15", 
             "C17", "C18", "C19", "C20"};
-    gamCols = new String[]{"C11", "C2"};
+    String[] gamCols = new String[]{"C11", "C12"};
+    // test for Gaussian
+    testCoeffs(GLMModel.GLMParameters.Family.gaussian, "smalldata/glm_test/gaussian_20cols_10000Rows.csv",
+            "C21", gamCols, ignoredCols);
+    // test for binomial
     testCoeffs(GLMModel.GLMParameters.Family.binomial, "smalldata/glm_test/binomial_20_cols_10KRows.csv", 
             "C21", gamCols, ignoredCols);
-    // test for Gaussian
-    testCoeffs(GLMModel.GLMParameters.Family.gaussian, "smalldata/glm_test/gaussian_20cols_10000Rows.csv", 
-            "C21", gamCols, ignoredCols);
+    // test for multinomial
+    ignoredCols = new String[]{"C3", "C4", "C5", "C6", "C7", "C8", "C9", "C10"};
+    gamCols = new String[]{"C6", "C7"};
+    testCoeffs(GLMModel.GLMParameters.Family.multinomial,
+            "smalldata/glm_test/multinomial_10_classes_10_cols_10000_Rows_train.csv", "C11",
+            gamCols, ignoredCols);
 
   }
 
@@ -201,15 +200,16 @@ public class GamTestPiping extends TestUtil {
       Frame transformedData = ((Frame) DKV.getGet(gam._output._gamTransformedTrain));
       Scope.track(transformedData);
       numCols = transformedData.numCols()-1;
-      for (int ind = 2; ind < numCols; ind++)
+      for (int ind = 0; ind < numCols; ind++)
         System.out.println(transformedData.vec(ind).mean());
       Frame transformedDataCenter = ((Frame) DKV.getGet(gam._output._gamTransformedTrainCenter));
       Scope.track(transformedDataCenter);
       numCols = transformedDataCenter.numCols()-1;
-      for (int ind = 2; ind < numCols; ind++)
+      System.out.println("Print center gamx");
+      for (int ind = 0; ind < numCols; ind++)
         System.out.println(transformedDataCenter.vec(ind).mean());
-/*      Frame predictF = Scope.track(gam.score(train)); // predict with train data
-      Scope.track(predictF);*/
+      Frame predictF = Scope.track(gam.score(transformedData)); // predict with train data
+      Scope.track(predictF);
       System.out.println("Wow");
       
     } finally {
