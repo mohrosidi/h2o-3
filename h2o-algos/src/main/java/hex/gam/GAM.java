@@ -10,6 +10,7 @@ import hex.glm.GLMModel;
 import hex.glm.GLMModel.GLMParameters;
 import water.DKV;
 import water.Key;
+import water.MemoryManager;
 import water.Scope;
 import water.exceptions.H2OModelBuilderIllegalArgumentException;
 import water.fvec.Frame;
@@ -62,15 +63,6 @@ public class GAM extends ModelBuilder<GAMModel, GAMModel.GAMParameters, GAMModel
     super(parms, key);
     init(false);
   }
-
-/*  @Override
-  public int nclasses() {
-    if (_parms._family == GLMParameters.Family.multinomial || _parms._family == GLMParameters.Family.ordinal)
-      return _nclass;
-    if (_parms._family == GLMParameters.Family.binomial || _parms._family == GLMParameters.Family.quasibinomial)
-      return 2;
-    return 1;
-  }*/
   
   @Override
   public void init(boolean expensive) {
@@ -120,6 +112,9 @@ public class GAM extends ModelBuilder<GAMModel, GAMModel.GAMParameters, GAMModel
     boolean _centerGAM = false; // true if we need to constraint GAM columns
     double[][][] _zTranspose; // store for each GAM predictor transpose(Z) matrix
     double[][][] _penalty_mat;  // store for each GAM predictir the penalty matrix
+    public double[][][] _binvD; // store BinvD for each gam column specified for scoring
+    public double[][] _knots; // store knots location for each gam column
+    public int[] _numKnots;  // store number of knots per gam column
     String[][] _gamColNames;  // store column names of GAM columns
     String[][] _gamColNamesCenter;  // gamColNames after de-centering is performed.
     Key<Frame>[] _gamFrameKeys;
@@ -140,12 +135,16 @@ public class GAM extends ModelBuilder<GAMModel, GAMModel.GAMParameters, GAMModel
       _zTranspose = _centerGAM ? GamUtils.allocate3DArray(numGamFrame, _parms, 0) : null;
       _penalty_mat = _centerGAM ? GamUtils.allocate3DArray(numGamFrame, _parms, 2) :
               GamUtils.allocate3DArray(numGamFrame, _parms, 1);
+      _binvD = GamUtils.allocate3DArray(numGamFrame, _parms, 3);
+      _numKnots = MemoryManager.malloc4(numGamFrame);
+      _knots = new double[numGamFrame][];
       _gamColNames = new String[numGamFrame][];
       _gamColNamesCenter = new String[numGamFrame][];
       _gamFrameKeys = new Key[numGamFrame];
       _gamFrameKeysCenter = new Key[numGamFrame];
-      addGAM2Train(_parms, _parms.train(), _train, _zTranspose, _penalty_mat, _gamColNames, _gamColNamesCenter,
-              true, _centerGAM, _gamFrameKeys, _gamFrameKeysCenter);
+
+      addGAM2Train(_parms, _parms.train(), _zTranspose, _penalty_mat, _gamColNames, _gamColNamesCenter,
+              true, _centerGAM, _gamFrameKeys, _gamFrameKeysCenter, _binvD, _numKnots, _knots);
       return buildGamFrame(numGamFrame, _gamFrameKeys, _train, _parms._response_column); // add gam cols to _train
     }
 
@@ -234,6 +233,9 @@ public class GAM extends ModelBuilder<GAMModel, GAMModel.GAMParameters, GAMModel
       model._gamFrameKeys = _gamFrameKeys;
       model._gamFrameKeysCenter = _gamFrameKeysCenter;
       model._nclass = _nclass;
+      model._output._binvD = _binvD;
+      model._output._knots = _knots;
+      model._output._numKnots = _numKnots;
       if (_parms._savePenaltyMat)
         model._output._penaltyMatrices = _penalty_mat;
       copyGLMCoeffs(glm, model, dinfo);  // copy over coefficient names and generate coefficients as beta = z*GLM_beta

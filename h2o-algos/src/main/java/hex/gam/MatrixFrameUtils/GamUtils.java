@@ -36,7 +36,8 @@ public class GamUtils {
         case 0: array3D[frameIdx] = MemoryManager.malloc8d(numKnots-1, numKnots); break;
         case 1: array3D[frameIdx] = MemoryManager.malloc8d(numKnots, numKnots); break;
         case 2: array3D[frameIdx] = MemoryManager.malloc8d(numKnots-1, numKnots-1); break;
-        default: throw new IllegalArgumentException("fileMode can only be 0, 1 or 2.");
+        case 3: array3D[frameIdx] = MemoryManager.malloc8d(numKnots-2, numKnots); break;
+        default: throw new IllegalArgumentException("fileMode can only be 0, 1, 2 or 3.");
       }
     }
     return array3D;
@@ -209,10 +210,10 @@ public class GamUtils {
               dinfo.fullN()+1);
     return 0;
   }
-  public static void addGAM2Train(GAMParameters parms, Frame orig, Frame _train, double[][][] zTranspose, 
+  public static void addGAM2Train(GAMParameters parms, Frame orig, double[][][] zTranspose, 
                                    double[][][] penalty_mat, String[][] gamColnames, String[][] gamColnamesCenter, 
                                    boolean modelBuilding, boolean centerGAM, Key<Frame>[] gamFrameKeys, 
-                                   Key<Frame>[] gamFrameKeysCenter) {
+                                   Key<Frame>[] gamFrameKeysCenter, double[][][] binvD, int[] numKnotsMat, double[][] knotsMat) {
     int numGamFrame = parms._gam_X.length;
     RecursiveAction[] generateGamColumn = new RecursiveAction[numGamFrame];
     for (int index = 0; index < numGamFrame; index++) {
@@ -228,6 +229,7 @@ public class GamUtils {
       }
       gamColnames[frameIndex] = new String[numKnots];
       gamColnamesCenter[frameIndex] = new String[numKnotsM1];
+      knotsMat[frameIndex] = new double[numKnots];
       System.arraycopy(newColNames, 0, gamColnames[frameIndex], 0, numKnots);
       generateGamColumn[frameIndex] = new RecursiveAction() {
         @Override
@@ -255,6 +257,9 @@ public class GamUtils {
                       numKnotsM1);
             } else
               GamUtils.copy2DArray(genOneGamCol._penaltyMat, penalty_mat[frameIndex]); // copy penalty matrix
+            GamUtils.copy2DArray(genOneGamCol._bInvD, binvD[frameIndex]);
+            numKnotsMat[frameIndex] = genOneGamCol._numKnots;
+            System.arraycopy(genOneGamCol._knots, 0, knotsMat[frameIndex], 0, numKnots);
           }
         }
       };

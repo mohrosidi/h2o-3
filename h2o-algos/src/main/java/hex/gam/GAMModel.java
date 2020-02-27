@@ -4,7 +4,10 @@ import hex.*;
 import hex.deeplearning.DeepLearningModel;
 import hex.glm.GLM;
 import hex.glm.GLMModel;
-import hex.glm.GLMModel.GLMParameters.*;
+import hex.glm.GLMModel.GLMParameters.Family;
+import hex.glm.GLMModel.GLMParameters.GLMType;
+import hex.glm.GLMModel.GLMParameters.Link;
+import hex.glm.GLMModel.GLMParameters.Solver;
 import water.*;
 import water.fvec.Chunk;
 import water.fvec.Frame;
@@ -17,7 +20,6 @@ import water.util.Log;
 import java.io.Serializable;
 import java.util.Arrays;
 
-import static hex.gam.MatrixFrameUtils.GamUtils.addGAM2Train;
 import static hex.gam.MatrixFrameUtils.GamUtils.equalColNames;
 import static hex.glm.GLMModel.GLMParameters.MissingValuesHandling;
 
@@ -175,6 +177,8 @@ public class GAMModel extends Model<GAMModel, GAMModel.GAMParameters, GAMModel.G
     public double[][][] _zTranspose; // Z matrix for de-centralization, can be null
     public double[][][] _penaltyMatrices; // stores t(Z)*t(D)*Binv*D*Z and can be null
     public double[][][] _binvD; // store BinvD for each gam column specified for scoring
+    public double[][] _knots; // store knots location for each gam column
+    public int[] _numKnots;  // store number of knots per gam column
     public Key<Frame> _gamTransformedTrain;  // contain key of predictors, all gam columns
     public Key<Frame> _gamTransformedTrainCenter;  // contain key of predictors, all gam columns centered
     public Key<Frame> _gamGamXCenter; // store key for centered GAM columns if needed
@@ -221,9 +225,9 @@ public class GAMModel extends Model<GAMModel, GAMModel.GAMParameters, GAMModel.G
       }
       String[][] gamColnames = new String[_parms._gam_X.length][];
       String[][] gamColnamesDecenter = new String[_parms._gam_X.length][];
-      addGAM2Train(_parms, test, adptedF, null, null, gamColnames, gamColnamesDecenter, 
-              false, false, _gamFrameKeys, _gamFrameKeysCenter);
-      return super.adaptTestForTrain(adptedF, expensive, computeMetrics);
+/*      addGAM2Train(_parms, test, adptedF, null, null, gamColnames, gamColnamesDecenter, 
+              false, false, _gamFrameKeys, _gamFrameKeysCenter, _binvD, );
+ */     return super.adaptTestForTrain(adptedF, expensive, computeMetrics);
     }
     return super.adaptTestForTrain(test, expensive, computeMetrics);
   }

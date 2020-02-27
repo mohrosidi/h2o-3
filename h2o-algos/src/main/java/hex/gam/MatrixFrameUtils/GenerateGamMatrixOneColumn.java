@@ -25,6 +25,7 @@ public class GenerateGamMatrixOneColumn extends MRTask<GenerateGamMatrixOneColum
   double[] _u; // store transpose(X)*1
   public double[][] _ZTransp;  // store Z matrix transpose
   public double[][] _penaltyMat;  // store penalty matrix
+  double[] _knots;
   
   public GenerateGamMatrixOneColumn(BSType splineType, int numKnots, double[] knots, Frame gamx, boolean standardize,
                                     boolean centerGam, double penalty_scale) {
@@ -37,6 +38,8 @@ public class GenerateGamMatrixOneColumn extends MRTask<GenerateGamMatrixOneColum
     _penaltyMat = crSplines.gen_penalty_matrix(ArrayUtils.mult(crSplines._hj, penalty_scale), _bInvD);
     _gamX = gamx;
     _centerGAM = centerGam;
+    _knots = new double[numKnots];
+    System.arraycopy(crSplines._knots, 0, _knots, 0, numKnots);
   }
 
   @Override
